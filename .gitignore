@@ -1,0 +1,31 @@
+# Secrets and env files
+.env
+.env.*
+!.env.example
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Airflow runtime artifacts
+airflow/logs/
+airflow/dags/__pycache__/
+airflow/utils/__pycache__/
+
+# Data lake generated outputs (keep placeholders only)
+datalake_bronze/*.json
+datalake_silver/*.parquet
+datalake_gold/*
+!datalake_gold/.gitkeep
+
+# Jupyter artifacts
+.ipynb_checkpoints/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
