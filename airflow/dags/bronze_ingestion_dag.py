@@ -3,95 +3,133 @@ from datetime import datetime
 import json
 import os
 import sys
-
-sys.path.insert(0, "/opt/airflow")
+sys.path.insert(0, "/opt/airflow/utils")
 sys.path.insert(0, "/opt/airflow/dags")
-from utils.tmdb_client import fetch_top_rated_movies, fetch_top_rated_tv
-from utils.rt_scraper import scrape_movies_in_theaters
+from utils.tmdb_client import (
+    fetch_trending_today,
+    fetch_popular_movies,
+    fetch_top_rated_movies,
+    fetch_top_rated_tv,
+    fetch_multiple_pages
+)
+from utils.rt_scraper import (
+    scrape_movies_in_theaters,
+    scrape_reviews_for_movies
+)
 
 BRONZE_PATH = "/opt/airflow/datalake_bronze"
+
+
+def get_timestamp():
+    """Retorna timestamp en formato YYYYMMDD_HHMMSS para nombres de archivo"""
+    return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+
+def save_json(data, filename):
+    os.makedirs(BRONZE_PATH, exist_ok=True)
+    filepath = f"{BRONZE_PATH}/{filename}"
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    print(f"Saved: {filepath} ({os.path.getsize(filepath)} bytes)")
+    return filepath
+
 
 @dag(
     dag_id="bronze_ingestion",
     schedule_interval="@daily",
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    tags=["bronze", "ingestion"],
-    doc_md="""
-    ## Bronze Ingestion DAG
-    Extrae datos de TMDB API y Rotten Tomatoes scraping.
-    Guarda los resultados como JSON en datalake_bronze/.
-    Nomenclatura: source_YYYYMMDDTHHMMSS.json
-    """
+    tags=["bronze", "ingestion"]
 )
 def bronze_ingestion():
 
     @task()
-    def extract_tmdb_movies(**context):
-        ts = context["ts_nodash"]
-        data = fetch_top_rated_movies()
-
-        # Agregar metadata de ingestion
+    def extract_tmdb_trending():
+        ts = get_timestamp()
+        data = fetch_trending_today()
         data["ingested_at"] = datetime.utcnow().isoformat()
-        data["source"] = "tmdb_top_rated_movies"
-
-        filename = f"{BRONZE_PATH}/tmdb_movies_{ts}.json"
-        os.makedirs(BRONZE_PATH, exist_ok=True)
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-
-        print(f"Saved {len(data['results'])} records to {filename}")
-        return filename
+        data["source"] = "tmdb_trending_day"
+        # Nomenclatura: source_YYYYMMDD_HHMMSS.json
+        return save_json(data, f"tmdb_trending_{ts}.json")
 
     @task()
-    def extract_tmdb_tv(**context):
-        ts = context["ts_nodash"]
-        data = fetch_top_rated_tv()
+    def extract_tmdb_popular():
+        ts = get_timestamp()
+        data = fetch_multiple_pages(fetch_popular_movies, pages=3)
+        data["ingested_at"] = datetime.utcnow().isoformat()
+        data["source"] = "tmdb_popular_movies"
+        return save_json(data, f"tmdb_popular_{ts}.json")
 
+    @task()
+    def extract_tmdb_top_rated():
+        ts = get_timestamp()
+        data = fetch_multiple_pages(fetch_top_rated_movies, pages=3)
+        data["ingested_at"] = datetime.utcnow().isoformat()
+        data["source"] = "tmdb_top_rated"
+        return save_json(data, f"tmdb_top_rated_{ts}.json")
+
+    @task()
+    def extract_tmdb_tv():
+        ts = get_timestamp()
+        data = fetch_multiple_pages(fetch_top_rated_tv, pages=3)
         data["ingested_at"] = datetime.utcnow().isoformat()
         data["source"] = "tmdb_top_rated_tv"
-
-        filename = f"{BRONZE_PATH}/tmdb_tv_{ts}.json"
-        os.makedirs(BRONZE_PATH, exist_ok=True)
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-
-        print(f"Saved {len(data['results'])} records to {filename}")
-        return filename
+        return save_json(data, f"tmdb_tv_{ts}.json")
 
     @task()
-    def extract_rotten_tomatoes(**context):
-        ts = context["ts_nodash"]
+    def extract_rt_theaters():
+        ts = get_timestamp()
         movies = scrape_movies_in_theaters()
-
         data = {
             "results": movies,
             "total": len(movies),
             "ingested_at": datetime.utcnow().isoformat(),
-            "source": "rotten_tomatoes_theaters"
+            "source": "rottentomatoes_theaters"
         }
-
-        filename = f"{BRONZE_PATH}/rottentomatoes_{ts}.json"
-        os.makedirs(BRONZE_PATH, exist_ok=True)
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-
-        print(f"Saved {len(movies)} records to {filename}")
-        return filename
+        return save_json(data, f"rottentomatoes_theaters_{ts}.json")
 
     @task()
-    def validate_bronze_files(tmdb_movies_file, tmdb_tv_file, rt_file):
-        """Valida que los archivos se crearon y tienen contenido"""
-        for filepath in [tmdb_movies_file, tmdb_tv_file, rt_file]:
-            assert os.path.exists(filepath), f"File not found: {filepath}"
-            size = os.path.getsize(filepath)
-            assert size > 0, f"File is empty: {filepath}"
-            print(f"OK: {filepath} ({size} bytes)")
+    def extract_rt_reviews(rt_theaters_file):
+        """
+        Lee el archivo de teatros que acaba de generar la tarea anterior
+        y scrapea las reseñas de las primeras 5 películas.
+        Depende de extract_rt_theaters para tener las URLs.
+        """
+        ts = get_timestamp()
 
-    tmdb_movies = extract_tmdb_movies()
-    tmdb_tv     = extract_tmdb_tv()
-    rt          = extract_rotten_tomatoes()
+        # Lee el archivo Bronze que generó la tarea anterior
+        with open(rt_theaters_file, "r", encoding="utf-8") as f:
+            theaters_data = json.load(f)
 
-    validate_bronze_files(tmdb_movies, tmdb_tv, rt)
+        movies = theaters_data.get("results", [])
+        reviews_data = scrape_reviews_for_movies(
+            movies,
+            max_movies=5,
+            max_reviews_per_movie=10
+        )
+
+        data = {
+            "results": reviews_data,
+            "total_movies": len(reviews_data),
+            "ingested_at": datetime.utcnow().isoformat(),
+            "source": "rottentomatoes_reviews"
+        }
+        return save_json(data, f"rottentomatoes_reviews_{ts}.json")
+
+    @task()
+    def validate_files(*files):
+        for filepath in files:
+            assert os.path.exists(filepath), f"Missing: {filepath}"
+            assert os.path.getsize(filepath) > 0, f"Empty: {filepath}"
+            print(f"OK: {filepath}")
+
+    trending   = extract_tmdb_trending()
+    popular    = extract_tmdb_popular()
+    top_rated  = extract_tmdb_top_rated()
+    tv         = extract_tmdb_tv()
+    theaters   = extract_rt_theaters()
+    reviews    = extract_rt_reviews(theaters)  # depende de theaters
+
+    validate_files(trending, popular, top_rated, tv, theaters, reviews)
 
 bronze_ingestion()

@@ -1,8 +1,5 @@
 x-airflow-common:
   &airflow-common
-  #  Dockerfile con requirements.txt:
-  # Comentar la línea image y descomenta build
-  #image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.9.1}
   build: .
   environment:
     &airflow-common-env
@@ -16,14 +13,13 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN}
     TMDB_API_KEY: ${TMDB_API_KEY}
+    PYTHONPATH: /opt/airflow/dags:/opt/airflow    # <-- CAMBIO CLAVE
   volumes:
-    # DAGs dentro de la carpeta airflow/ del proyecto
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/dags:/opt/airflow/dags
-    - ${AIRFLOW_PROJ_DIR:-.}/airflow/utils:/opt/airflow/utils
+    - ${AIRFLOW_PROJ_DIR:-.}/airflow/utils:/opt/airflow/utils  # se mantiene igual
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/config:/opt/airflow/config
-    # Capas del datalake montadas para que los DAGs puedan escribir en el host
     - ${AIRFLOW_PROJ_DIR:-.}/datalake_bronze:/opt/airflow/datalake_bronze
     - ${AIRFLOW_PROJ_DIR:-.}/datalake_silver:/opt/airflow/datalake_silver
     - ${AIRFLOW_PROJ_DIR:-.}/datalake_gold:/opt/airflow/datalake_gold
@@ -81,7 +77,6 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
-  # Necesario para FileSensor detección de archivos en datalake_bronze
   airflow-triggerer:
     <<: *airflow-common
     command: triggerer
@@ -125,7 +120,6 @@ services:
       _PIP_ADDITIONAL_REQUIREMENTS: ''
     user: "0:0"
 
-  # Perfil debug — solo se levanta con: docker compose --profile debug up
   airflow-cli:
     <<: *airflow-common
     profiles:
