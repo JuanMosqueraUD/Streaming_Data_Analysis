@@ -105,13 +105,12 @@ def _fetch_reviews_from_api(api_url, review_type, max_reviews=20, top_only=False
     return collected[:max_reviews]
 
 
-def scrape_movies_in_theaters():
+def _scrape_browse_movies(browse_path):
     """
-    Scrapea películas actualmente en cartelera.
-    Trae: título, fecha, critics score, audience score, poster, url.
+    Scrapea una página de browse de Rotten Tomatoes que usa tarjetas
+    de discovery-media-list-item.
     """
-    url = f"{RT_BASE_URL}/browse/movies_in_theaters/sort:popular"
-    soup = _get_soup(url)
+    soup = _get_soup(f"{RT_BASE_URL}{browse_path}")
 
     movies = []
     items = soup.find_all("div", {"data-qa": "discovery-media-list-item"})
@@ -135,6 +134,22 @@ def scrape_movies_in_theaters():
         })
 
     return movies
+
+
+def scrape_movies_in_theaters():
+    """
+    Scrapea películas actualmente en cartelera.
+    Trae: título, fecha, critics score, audience score, poster, url.
+    """
+    return _scrape_browse_movies("/browse/movies_in_theaters/sort:popular")
+
+
+def scrape_movies_at_home():
+    """
+    Scrapea películas en streaming / at home ordenadas por popularidad.
+    Complementa la cartelera con contenido disponible fuera de salas.
+    """
+    return _scrape_browse_movies("/browse/movies_at_home/sort:popular")
 
 
 def scrape_critic_reviews(movie_url, max_reviews=20):

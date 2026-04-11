@@ -6,19 +6,21 @@ import sys
 sys.path.insert(0, "/opt/airflow/utils")
 sys.path.insert(0, "/opt/airflow/dags")
 from utils.tmdb_client import (
-    fetch_trending_today,
-    fetch_popular_movies,
-    fetch_top_rated_movies,
-    fetch_top_rated_tv,
-    fetch_multiple_pages
+    fetch_trending_movies_day,
+    fetch_now_playing_movies,
+    fetch_multiple_pages,
+    fetch_reviews_for_movies
 )
 from utils.rt_scraper import (
     scrape_movies_in_theaters,
+    scrape_movies_at_home,
     scrape_reviews_for_movies
 )
 
 BRONZE_PATH = "/opt/airflow/datalake_bronze"
-TMDB_PAGES = int(os.getenv("TMDB_PAGES", "3"))
+TMDB_NOW_PLAYING_PAGES = int(os.getenv("TMDB_NOW_PLAYING_PAGES", os.getenv("TMDB_PAGES", "3")))
+TMDB_REVIEW_MOVIES = int(os.getenv("TMDB_REVIEW_MOVIES", "10"))
+TMDB_REVIEWS_PER_MOVIE = int(os.getenv("TMDB_REVIEWS_PER_MOVIE", "5"))
 RT_MAX_MOVIES = int(os.getenv("RT_MAX_MOVIES", "5"))
 RT_MAX_REVIEWS_PER_MOVIE = int(os.getenv("RT_MAX_REVIEWS_PER_MOVIE", "10"))
 
@@ -49,35 +51,58 @@ def bronze_ingestion():
     @task()
     def extract_tmdb_trending():
         ts = get_timestamp()
-        data = fetch_trending_today()
+        data = fetch_trending_movies_day()
         data["ingested_at"] = datetime.utcnow().isoformat()
-        data["source"] = "tmdb_trending_day"
-        # Nomenclatura: source_YYYYMMDD_HHMMSS.json
-        return save_json(data, f"tmdb_trending_{ts}.json")
+        data["source"] = "tmdb_trending_movie_day"
+        return save_json(data, f"tmdb_trending_movie_day_{ts}.json")
 
     @task()
-    def extract_tmdb_popular():
+    def extract_tmdb_now_playing():
         ts = get_timestamp()
-        data = fetch_multiple_pages(fetch_popular_movies, pages=TMDB_PAGES)
+        data = fetch_multiple_pages(fetch_now_playing_movies, pages=TMDB_NOW_PLAYING_PAGES)
         data["ingested_at"] = datetime.utcnow().isoformat()
-        data["source"] = "tmdb_popular_movies"
-        return save_json(data, f"tmdb_popular_{ts}.json")
+        data["source"] = "tmdb_now_playing"
+        return save_json(data, f"tmdb_now_playing_{ts}.json")
 
     @task()
-    def extract_tmdb_top_rated():
+    def extract_tmdb_reviews(trending_file, now_playing_file):
         ts = get_timestamp()
-        data = fetch_multiple_pages(fetch_top_rated_movies, pages=TMDB_PAGES)
-        data["ingested_at"] = datetime.utcnow().isoformat()
-        data["source"] = "tmdb_top_rated"
-        return save_json(data, f"tmdb_top_rated_{ts}.json")
+        with open(trending_file, "r", encoding="utf-8") as f:
+            trending_data = json.load(f)
 
-    @task()
-    def extract_tmdb_tv():
-        ts = get_timestamp()
-        data = fetch_multiple_pages(fetch_top_rated_tv, pages=TMDB_PAGES)
-        data["ingested_at"] = datetime.utcnow().isoformat()
-        data["source"] = "tmdb_top_rated_tv"
-        return save_json(data, f"tmdb_tv_{ts}.json")
+        with open(now_playing_file, "r", encoding="utf-8") as f:
+            now_playing_data = json.load(f)
+
+        combined_movies = trending_data.get("results", []) + now_playing_data.get("results", [])
+        seen_ids = set()
+        unique_movies = []
+        for movie in combined_movies:
+            movie_id = movie.get("id")
+            if movie_id is None or movie_id in seen_ids:
+                continue
+            seen_ids.add(movie_id)
+            unique_movies.append(movie)
+
+        reviews_data = fetch_reviews_for_movies(
+            unique_movies,
+            max_movies=TMDB_REVIEW_MOVIES,
+            max_reviews_per_movie=TMDB_REVIEWS_PER_MOVIE,
+        )
+
+        total_reviews = sum(item.get("total_reviews", 0) for item in reviews_data)
+        print(
+            "TMDB review summary -> "
+            f"movies={len(reviews_data)}, "
+            f"reviews={total_reviews}"
+        )
+
+        data = {
+            "results": reviews_data,
+            "total_movies": len(reviews_data),
+            "ingested_at": datetime.utcnow().isoformat(),
+            "source": "tmdb_movie_reviews"
+        }
+        return save_json(data, f"tmdb_movie_reviews_{ts}.json")
 
     @task()
     def extract_rt_theaters():
@@ -92,19 +117,21 @@ def bronze_ingestion():
         return save_json(data, f"rottentomatoes_theaters_{ts}.json")
 
     @task()
-    def extract_rt_reviews(rt_theaters_file):
-        """
-        Lee el archivo de teatros que acaba de generar la tarea anterior
-        y scrapea las reseñas de las primeras 5 películas.
-        Depende de extract_rt_theaters para tener las URLs.
-        """
+    def extract_rt_at_home():
         ts = get_timestamp()
+        movies = scrape_movies_at_home()
+        data = {
+            "results": movies,
+            "total": len(movies),
+            "ingested_at": datetime.utcnow().isoformat(),
+            "source": "rottentomatoes_at_home"
+        }
+        return save_json(data, f"rottentomatoes_at_home_{ts}.json")
 
-        # Lee el archivo Bronze que generó la tarea anterior
-        with open(rt_theaters_file, "r", encoding="utf-8") as f:
-            theaters_data = json.load(f)
-
-        movies = theaters_data.get("results", [])
+    @task()
+    def extract_rt_reviews():
+        ts = get_timestamp()
+        movies = scrape_movies_in_theaters()
         reviews_data = scrape_reviews_for_movies(
             movies,
             max_movies=RT_MAX_MOVIES,
@@ -129,6 +156,33 @@ def bronze_ingestion():
         return save_json(data, f"rottentomatoes_reviews_{ts}.json")
 
     @task()
+    def extract_rt_at_home_reviews():
+        ts = get_timestamp()
+        movies = scrape_movies_at_home()
+        reviews_data = scrape_reviews_for_movies(
+            movies,
+            max_movies=RT_MAX_MOVIES,
+            max_reviews_per_movie=RT_MAX_REVIEWS_PER_MOVIE
+        )
+
+        total_critic_reviews = sum(item.get("total_critic_reviews", 0) for item in reviews_data)
+        total_audience_reviews = sum(item.get("total_audience_reviews", 0) for item in reviews_data)
+        print(
+            "RT at-home review summary -> "
+            f"movies={len(reviews_data)}, "
+            f"critic_reviews={total_critic_reviews}, "
+            f"audience_reviews={total_audience_reviews}"
+        )
+
+        data = {
+            "results": reviews_data,
+            "total_movies": len(reviews_data),
+            "ingested_at": datetime.utcnow().isoformat(),
+            "source": "rottentomatoes_at_home_reviews"
+        }
+        return save_json(data, f"rottentomatoes_at_home_reviews_{ts}.json")
+
+    @task()
     def validate_files(*files):
         for filepath in files:
             assert os.path.exists(filepath), f"Missing: {filepath}"
@@ -136,12 +190,13 @@ def bronze_ingestion():
             print(f"OK: {filepath}")
 
     trending   = extract_tmdb_trending()
-    popular    = extract_tmdb_popular()
-    top_rated  = extract_tmdb_top_rated()
-    tv         = extract_tmdb_tv()
+    now_playing = extract_tmdb_now_playing()
+    tmdb_reviews = extract_tmdb_reviews(trending, now_playing)
     theaters   = extract_rt_theaters()
-    reviews    = extract_rt_reviews(theaters)  # depende de theaters
+    at_home    = extract_rt_at_home()
+    reviews    = extract_rt_reviews()
+    at_home_reviews = extract_rt_at_home_reviews()
 
-    validate_files(trending, popular, top_rated, tv, theaters, reviews)
+    validate_files(trending, now_playing, tmdb_reviews, theaters, at_home, reviews, at_home_reviews)
 
 bronze_ingestion()
