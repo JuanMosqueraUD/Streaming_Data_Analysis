@@ -18,6 +18,9 @@ from utils.rt_scraper import (
 )
 
 BRONZE_PATH = "/opt/airflow/datalake_bronze"
+TMDB_PAGES = int(os.getenv("TMDB_PAGES", "3"))
+RT_MAX_MOVIES = int(os.getenv("RT_MAX_MOVIES", "5"))
+RT_MAX_REVIEWS_PER_MOVIE = int(os.getenv("RT_MAX_REVIEWS_PER_MOVIE", "10"))
 
 
 def get_timestamp():
@@ -55,7 +58,7 @@ def bronze_ingestion():
     @task()
     def extract_tmdb_popular():
         ts = get_timestamp()
-        data = fetch_multiple_pages(fetch_popular_movies, pages=3)
+        data = fetch_multiple_pages(fetch_popular_movies, pages=TMDB_PAGES)
         data["ingested_at"] = datetime.utcnow().isoformat()
         data["source"] = "tmdb_popular_movies"
         return save_json(data, f"tmdb_popular_{ts}.json")
@@ -63,7 +66,7 @@ def bronze_ingestion():
     @task()
     def extract_tmdb_top_rated():
         ts = get_timestamp()
-        data = fetch_multiple_pages(fetch_top_rated_movies, pages=3)
+        data = fetch_multiple_pages(fetch_top_rated_movies, pages=TMDB_PAGES)
         data["ingested_at"] = datetime.utcnow().isoformat()
         data["source"] = "tmdb_top_rated"
         return save_json(data, f"tmdb_top_rated_{ts}.json")
@@ -71,7 +74,7 @@ def bronze_ingestion():
     @task()
     def extract_tmdb_tv():
         ts = get_timestamp()
-        data = fetch_multiple_pages(fetch_top_rated_tv, pages=3)
+        data = fetch_multiple_pages(fetch_top_rated_tv, pages=TMDB_PAGES)
         data["ingested_at"] = datetime.utcnow().isoformat()
         data["source"] = "tmdb_top_rated_tv"
         return save_json(data, f"tmdb_tv_{ts}.json")
@@ -104,8 +107,17 @@ def bronze_ingestion():
         movies = theaters_data.get("results", [])
         reviews_data = scrape_reviews_for_movies(
             movies,
-            max_movies=5,
-            max_reviews_per_movie=10
+            max_movies=RT_MAX_MOVIES,
+            max_reviews_per_movie=RT_MAX_REVIEWS_PER_MOVIE
+        )
+
+        total_critic_reviews = sum(item.get("total_critic_reviews", 0) for item in reviews_data)
+        total_audience_reviews = sum(item.get("total_audience_reviews", 0) for item in reviews_data)
+        print(
+            "RT review summary -> "
+            f"movies={len(reviews_data)}, "
+            f"critic_reviews={total_critic_reviews}, "
+            f"audience_reviews={total_audience_reviews}"
         )
 
         data = {

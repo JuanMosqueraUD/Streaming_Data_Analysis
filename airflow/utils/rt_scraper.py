@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+import json
 import time
 
 HEADERS = {
@@ -12,15 +13,105 @@ HEADERS = {
 RT_BASE_URL = "https://www.rottentomatoes.com"
 
 
+def _get_soup(url):
+    response = requests.get(url, headers=HEADERS, timeout=30)
+    response.raise_for_status()
+    return BeautifulSoup(response.text, "html.parser")
+
+
+def _extract_media_props(movie_url):
+    """
+    Obtiene metadatos embebidos en la página de reviews para construir
+    el endpoint JSON real de Rotten Tomatoes (napi/rtcf).
+    """
+    soup = _get_soup(f"{movie_url}/reviews")
+    props_tag = soup.select_one('page-media-reviews-manager script[data-json="props"]')
+
+    if not props_tag or not props_tag.string:
+        return None
+
+    try:
+        props = json.loads(props_tag.string)
+    except json.JSONDecodeError:
+        return None
+
+    media = props.get("vanity") or {}
+    media_type = media.get("mediaType")
+    ems_id = media.get("emsId")
+
+    if not media_type or not ems_id:
+        return None
+
+    base_by_type = {
+        "Movie": f"{RT_BASE_URL}/napi/rtcf/v1/movies/{ems_id}/reviews",
+        "TvEpisode": f"{RT_BASE_URL}/napi/rtcf/v1/tv/episodes/{ems_id}/reviews",
+        "TvSeason": f"{RT_BASE_URL}/napi/rtcf/v1/tv/seasons/{ems_id}/reviews",
+    }
+
+    api_url = base_by_type.get(media_type)
+    if not api_url:
+        return None
+
+    return {
+        "api_url": api_url,
+        "ems_id": ems_id,
+        "media_type": media_type,
+    }
+
+
+def _fetch_reviews_from_api(api_url, review_type, max_reviews=20, top_only=False, verified=False):
+    """
+    Consulta la API JSON usada por Rotten Tomatoes y pagina usando cursor.
+    """
+    if max_reviews <= 0:
+        return []
+
+    page_count = min(max_reviews, 20)
+    params = {
+        "type": review_type,
+        "pageCount": page_count,
+    }
+
+    if top_only:
+        params["topOnly"] = "true"
+    if verified:
+        params["verified"] = "true"
+
+    collected = []
+    next_cursor = ""
+
+    while len(collected) < max_reviews:
+        request_params = dict(params)
+        request_params["after"] = next_cursor
+
+        response = requests.get(api_url, headers=HEADERS, params=request_params, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+
+        page_reviews = payload.get("reviews", [])
+        page_info = payload.get("pageInfo", {})
+
+        if not page_reviews:
+            break
+
+        collected.extend(page_reviews)
+
+        has_next = bool(page_info.get("hasNextPage"))
+        next_cursor = page_info.get("endCursor", "")
+
+        if not has_next or not next_cursor:
+            break
+
+    return collected[:max_reviews]
+
+
 def scrape_movies_in_theaters():
     """
     Scrapea películas actualmente en cartelera.
     Trae: título, fecha, critics score, audience score, poster, url.
     """
     url = f"{RT_BASE_URL}/browse/movies_in_theaters/sort:popular"
-    page = requests.get(url, headers=HEADERS)
-    page.raise_for_status()
-    soup = BeautifulSoup(page.text, "html.parser")
+    soup = _get_soup(url)
 
     movies = []
     items = soup.find_all("div", {"data-qa": "discovery-media-list-item"})
@@ -53,51 +144,38 @@ def scrape_critic_reviews(movie_url, max_reviews=20):
     Trae: nombre del crítico, publicación, texto de la reseña, score (fresh/rotten), fecha.
     Esto es lo que NO trae TMDB y es clave para sentiment analysis.
     """
-    reviews_url = f"{movie_url}/reviews"
-    page = requests.get(reviews_url, headers=HEADERS)
-    page.raise_for_status()
-    soup = BeautifulSoup(page.text, "html.parser")
+    source_url = f"{movie_url}/reviews"
+    media_props = _extract_media_props(movie_url)
+    if not media_props:
+        return []
+
+    raw_reviews = _fetch_reviews_from_api(
+        api_url=media_props["api_url"],
+        review_type="critic",
+        max_reviews=max_reviews,
+    )
 
     reviews = []
-    review_items = soup.find_all("div", {"class": "review-row"})[:max_reviews]
+    for item in raw_reviews:
+        review_text = item.get("reviewQuote")
+        if not review_text:
+            continue
 
-    for item in review_items:
-        # Texto de la reseña
-        quote_tag = item.find("p", {"class": "review-text"})
-        if not quote_tag:
-            quote_tag = item.find("div", {"data-qa": "review-quote"})
+        critic = item.get("critic") or {}
+        publication = item.get("publication") or {}
 
-        # Nombre del crítico
-        critic_tag = item.find("a", {"data-qa": "review-critic-link"})
-        if not critic_tag:
-            critic_tag = item.find("span", {"class": "critic-name"})
-
-        # Publicación / medio
-        pub_tag = item.find("span", {"data-qa": "review-publication"})
-        if not pub_tag:
-            pub_tag = item.find("em", {"class": "critic-publication"})
-
-        # Score fresh o rotten
-        score_tag = item.find("score-icon-critic-deprecated")
-        if not score_tag:
-            score_tag = item.find("span", {"class": "review-sentiment"})
-
-        # Fecha de la reseña
-        date_tag = item.find("span", {"data-qa": "review-date"})
-
-        review_text = quote_tag.get_text(strip=True) if quote_tag else None
-
-        # Solo agrega si tiene texto — sin texto no sirve para NLP
-        if review_text:
-            reviews.append({
-                "critic":       critic_tag.get_text(strip=True) if critic_tag else None,
-                "publication":  pub_tag.get_text(strip=True) if pub_tag else None,
-                "review_text":  review_text,
-                "sentiment":    score_tag.get("sentiment") if score_tag else None,
-                "date":         date_tag.get_text(strip=True) if date_tag else None,
-                "source_url":   reviews_url,
-                "scraped_at":   datetime.utcnow().isoformat()
-            })
+        reviews.append({
+            "critic": critic.get("displayName"),
+            "publication": publication.get("name"),
+            "review_text": review_text,
+            "sentiment": item.get("scoreSentiment"),
+            "original_score": item.get("originalScore"),
+            "is_top_critic": bool(critic.get("isTopCritic")),
+            "date": item.get("createDate"),
+            "source_url": source_url,
+            "publication_review_url": item.get("publicationReviewUrl"),
+            "scraped_at": datetime.utcnow().isoformat(),
+        })
 
     return reviews
 
@@ -108,40 +186,34 @@ def scrape_audience_reviews(movie_url, max_reviews=20):
     Complementa las reseñas de críticos con opinión del público general.
     Trae: usuario, rating (1-5 estrellas), texto de la reseña, fecha.
     """
-    audience_url = f"{movie_url}/reviews?type=user"
-    page = requests.get(audience_url, headers=HEADERS)
-    page.raise_for_status()
-    soup = BeautifulSoup(page.text, "html.parser")
+    source_url = f"{movie_url}/reviews"
+    media_props = _extract_media_props(movie_url)
+    if not media_props:
+        return []
+
+    raw_reviews = _fetch_reviews_from_api(
+        api_url=media_props["api_url"],
+        review_type="audience",
+        max_reviews=max_reviews,
+    )
 
     reviews = []
-    review_items = soup.find_all("div", {"data-qa": "audience-review-item"})[:max_reviews]
+    for item in raw_reviews:
+        review_text = item.get("review")
+        if not review_text:
+            continue
 
-    for item in review_items:
-        # Texto de la reseña
-        text_tag = item.find("p", {"data-qa": "audience-review-body"})
+        user = item.get("user") or {}
 
-        # Usuario
-        user_tag = item.find("span", {"data-qa": "audience-reviewer-name"})
-
-        # Rating en estrellas
-        rating_tag = item.find("span", {"data-qa": "audience-reviewer-score"})
-        if not rating_tag:
-            rating_tag = item.find("score-icon-audience")
-
-        # Fecha
-        date_tag = item.find("span", {"data-qa": "audience-review-date"})
-
-        review_text = text_tag.get_text(strip=True) if text_tag else None
-
-        if review_text:
-            reviews.append({
-                "user":         user_tag.get_text(strip=True) if user_tag else "Anonymous",
-                "rating":       rating_tag.get("value") if rating_tag else None,
-                "review_text":  review_text,
-                "date":         date_tag.get_text(strip=True) if date_tag else None,
-                "source_url":   audience_url,
-                "scraped_at":   datetime.utcnow().isoformat()
-            })
+        reviews.append({
+            "user": item.get("displayName") or user.get("displayName") or "Anonymous",
+            "rating": item.get("rating"),
+            "is_verified": bool(item.get("isVerified")),
+            "review_text": review_text,
+            "date": item.get("createDate"),
+            "source_url": source_url,
+            "scraped_at": datetime.utcnow().isoformat(),
+        })
 
     return reviews
 
