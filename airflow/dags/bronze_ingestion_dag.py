@@ -1,4 +1,5 @@
 from airflow.decorators import dag, task
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from datetime import datetime
 import json
 import os
@@ -197,6 +198,14 @@ def bronze_ingestion():
     reviews    = extract_rt_reviews()
     at_home_reviews = extract_rt_at_home_reviews()
 
-    validate_files(trending, now_playing, tmdb_reviews, theaters, at_home, reviews, at_home_reviews)
+    trigger_silver = TriggerDagRunOperator(
+        task_id="trigger_silver_processing",
+        trigger_dag_id="silver_processing",
+        execution_date="{{ execution_date + macros.timedelta(minutes=3) }}",
+        reset_dag_run=True,
+        wait_for_completion=False,
+    )
+
+    validate_files(trending, now_playing, tmdb_reviews, theaters, at_home, reviews, at_home_reviews) >> trigger_silver
 
 bronze_ingestion()

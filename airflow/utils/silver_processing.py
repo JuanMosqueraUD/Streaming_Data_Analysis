@@ -217,6 +217,14 @@ def _ensure_columns(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
     return df[columns]
 
 
+def _stringify_value(value):
+    if pd.isna(value):
+        return ""
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    return str(value)
+
+
 def _drop_duplicates(df: pd.DataFrame, key_columns: List[str]) -> pd.DataFrame:
     if df.empty:
         return df
@@ -226,9 +234,57 @@ def _drop_duplicates(df: pd.DataFrame, key_columns: List[str]) -> pd.DataFrame:
         if col not in dedup_df.columns:
             dedup_df[col] = None
 
-    dedup_df["__dedup_key"] = dedup_df[key_columns].astype(str).agg("||".join, axis=1)
+    dedup_df["__dedup_key"] = dedup_df[key_columns].apply(
+        lambda row: "||".join(_stringify_value(v) for v in row),
+        axis=1,
+    )
     dedup_df = dedup_df.drop_duplicates(subset=["__dedup_key"], keep="first").drop(columns=["__dedup_key"])
     return dedup_df
+
+
+def _merge_group_values(values):
+    normalized_values = []
+    seen = set()
+
+    for value in values:
+        if pd.isna(value):
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                continue
+
+        if isinstance(value, (list, dict)):
+            key = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        else:
+            key = str(value)
+
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_values.append(value)
+
+    if not normalized_values:
+        return None
+    if len(normalized_values) == 1:
+        return normalized_values[0]
+    return ", ".join(str(v) for v in normalized_values)
+
+
+def _merge_duplicate_titles(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    merged_records: List[Dict] = []
+    for canonical_title, group in df.groupby("canonical_title", sort=False):
+        record: Dict = {"canonical_title": canonical_title}
+        for col in df.columns:
+            if col == "canonical_title":
+                continue
+            record[col] = _merge_group_values(group[col].tolist())
+        merged_records.append(record)
+
+    return pd.DataFrame(merged_records, columns=df.columns)
 
 
 def transform_titles(files: List[str], processed_at: str) -> pd.DataFrame:
@@ -309,6 +365,7 @@ def transform_titles(files: List[str], processed_at: str) -> pd.DataFrame:
     # Required key fields for title-level entity quality.
     df = df[df["canonical_title"].notna()]
     df = _drop_duplicates(df, ["source", "source_title", "url", "source_id"])
+    df = _merge_duplicate_titles(df)
     return _ensure_columns(df, SILVER_TITLES_COLUMNS)
 
 
@@ -476,9 +533,13 @@ def write_silver_parquet(df: pd.DataFrame, output_dir: str, prefix: str, run_sta
         logger.info("No rows to write for %s. Skipping file generation.", prefix)
         return None
 
+    df_to_write = df.copy()
+    for col in df_to_write.select_dtypes(include=["object"]).columns:
+        df_to_write[col] = df_to_write[col].astype("string")
+
     # Write to a temporary file and atomically replace to improve idempotency in retries.
     tmp_path = f"{output_path}.tmp"
-    df.to_parquet(tmp_path, index=False, engine="pyarrow")
+    df_to_write.to_parquet(tmp_path, index=False, engine="pyarrow")
     os.replace(tmp_path, output_path)
     logger.info("Wrote %s rows to %s", len(df), output_path)
     return output_path

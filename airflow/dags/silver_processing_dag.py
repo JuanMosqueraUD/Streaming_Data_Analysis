@@ -2,7 +2,7 @@ import logging
 import os
 from glob import glob
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from airflow.decorators import dag, task
 from airflow.sensors.base import PokeReturnValue
@@ -22,11 +22,12 @@ logger = logging.getLogger(__name__)
 
 BRONZE_DIR = "/opt/airflow/datalake_bronze"
 SILVER_DIR = "/opt/airflow/datalake_silver"
+PROCESSED_FILE = os.path.join(SILVER_DIR, "processed_bronze_files.parquet")
 
 
 @dag(
     dag_id="silver_processing",
-    schedule_interval="@hourly",
+    schedule_interval=None,
     start_date=datetime(2025, 1, 1),
     catchup=False,
     tags=["silver", "medallion", "normalization"],
@@ -52,18 +53,48 @@ def silver_processing_dag():
         return files
 
     @task()
-    def classify_files(files: List[str]) -> Dict[str, List[str]]:
+    def get_processed_files() -> Set[str]:
+        import pandas as pd
+        txt_file = PROCESSED_FILE.replace('.parquet', '.txt')
+        if os.path.exists(PROCESSED_FILE):
+            df = pd.read_parquet(PROCESSED_FILE)
+            return set(df['file_path'].tolist())
+        elif os.path.exists(txt_file):
+            # Migrate from txt to parquet
+            with open(txt_file, 'r', encoding='utf-8') as f:
+                file_paths = [line.strip() for line in f if line.strip()]
+            new_rows = []
+            for file_path in file_paths:
+                filename = os.path.basename(file_path)
+                parts = filename.rsplit('_', 2)
+                if len(parts) >= 3:
+                    date_str = parts[-2]
+                    time_str = parts[-1].split('.')[0]
+                    if len(date_str) == 8 and len(time_str) == 6:
+                        creation_day = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+                        creation_time = f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
+                        new_rows.append({'file_path': file_path, 'file_name': filename, 'creation_day': creation_day, 'creation_time': creation_time})
+            df = pd.DataFrame(new_rows)
+            df.to_parquet(PROCESSED_FILE, index=False)
+            # Optionally remove txt file
+            os.remove(txt_file)
+            return set(df['file_path'].tolist())
+        return set()
+
+    @task()
+    def classify_files(files: List[str], processed_files: Set[str]) -> Dict[str, List[str]]:
         grouped = group_files_by_silver_family(files)
+        filtered_grouped = {k: [f for f in v if f not in processed_files] for k, v in grouped.items()}
         logger.info(
-            "Classified Bronze files -> titles=%s rt_reviews=%s tmdb_reviews=%s ignored=%s",
-            len(grouped["silver_titles"]),
-            len(grouped["silver_rt_reviews"]),
-            len(grouped["silver_tmdb_reviews"]),
-            len(grouped["ignored"]),
+            "Classified and filtered Bronze files -> titles=%s rt_reviews=%s tmdb_reviews=%s ignored=%s",
+            len(filtered_grouped["silver_titles"]),
+            len(filtered_grouped["silver_rt_reviews"]),
+            len(filtered_grouped["silver_tmdb_reviews"]),
+            len(filtered_grouped["ignored"]),
         )
-        if grouped["ignored"]:
-            logger.warning("Ignored Bronze files: %s", grouped["ignored"])
-        return grouped
+        if filtered_grouped["ignored"]:
+            logger.warning("Ignored Bronze files: %s", filtered_grouped["ignored"])
+        return filtered_grouped
 
     @task()
     def get_run_stamp() -> str:
@@ -149,9 +180,31 @@ def silver_processing_dag():
         logger.info("Silver outputs: %s", summary)
         return summary
 
+    @task()
+    def save_processed_files(grouped: Dict[str, List[str]], processed_files: Set[str]) -> None:
+        import pandas as pd
+        existing_df = pd.read_parquet(PROCESSED_FILE) if os.path.exists(PROCESSED_FILE) else pd.DataFrame(columns=['file_path', 'file_name', 'creation_day', 'creation_time'])
+        new_files = set(f for files in grouped.values() for f in files)
+        new_rows = []
+        for file_path in new_files:
+            filename = os.path.basename(file_path)
+            parts = filename.rsplit('_', 2)
+            if len(parts) >= 3:
+                date_str = parts[-2]
+                time_str = parts[-1].split('.')[0]
+                if len(date_str) == 8 and len(time_str) == 6:
+                    creation_day = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+                    creation_time = f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
+                    new_rows.append({'file_path': file_path, 'file_name': filename, 'creation_day': creation_day, 'creation_time': creation_time})
+        new_df = pd.DataFrame(new_rows)
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True).drop_duplicates(subset='file_path')
+        combined_df.to_parquet(PROCESSED_FILE, index=False)
+        logger.info("Updated processed files Parquet with %s new files", len(new_df))
+
     bronze_ready = wait_for_bronze_files()
     files = list_files()
-    grouped = classify_files(files)
+    processed_files = get_processed_files()
+    grouped = classify_files(files, processed_files)
     run_stamp = get_run_stamp()
 
     titles_path = process_titles(grouped, run_stamp)
@@ -159,10 +212,11 @@ def silver_processing_dag():
     tmdb_reviews_path = process_tmdb_reviews(grouped, run_stamp)
 
     end = summarize_outputs(titles_path, rt_reviews_path, tmdb_reviews_path)
+    save_processed = save_processed_files(grouped, processed_files)
 
-    start >> bronze_ready >> files >> grouped
+    start >> bronze_ready >> files >> processed_files >> grouped
     grouped >> run_stamp
-    run_stamp >> [titles_path, rt_reviews_path, tmdb_reviews_path] >> end
+    run_stamp >> [titles_path, rt_reviews_path, tmdb_reviews_path] >> end >> save_processed
 
 
 silver_processing_dag()
