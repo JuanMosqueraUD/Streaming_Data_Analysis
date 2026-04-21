@@ -1,117 +1,130 @@
-# Streaming & Entertainment Public Sentiment — Data Analysis Project
+# Streaming & Entertainment Public Sentiment - Data Analysis Project
 
 ## Project Overview
 
-This project analyzes **public sentiment toward streaming content and the entertainment industry** by collecting, processing, and visualizing review and rating data from major entertainment aggregators. The goal is to uncover trends in audience perception, identify highly-rated vs. poorly-received titles, and track how sentiment evolves over time across genres and platforms.
+This project analyzes public sentiment toward movies and entertainment content by collecting and processing review/rating data from different public sources.
 
----
+Current pipeline focus:
+- TMDB (trending, now playing, and movie reviews)
+- Rotten Tomatoes (in theaters, at home, and reviews)
+
+The project follows a medallion architecture:
+- Bronze: raw JSON ingestion
+- Silver: normalized Parquet datasets
+- Gold: curated outputs for analysis
 
 ## Team Members
 
 | Name | Student ID |
 |------|-----------|
-| Juan David Amaya Patiño | 20221020057 |
+| Juan David Amaya Patino | 20221020057 |
 | Juan Pablo Mosquera | 20221020026 |
-| Edward Julian Garcia Gaitan | — |
-
----
+| Edward Julian Garcia Gaitan | - |
 
 ## Data Sources
 
 | Source | Description | URL |
 |--------|-------------|-----|
-| **IMDb** | Internet Movie Database — user ratings, reviews, and metadata for movies and TV shows | https://www.imdb.com |
-| **Rotten Tomatoes** | Critic and audience scores, consensus summaries, and review text for films and series | https://www.rottentomatoes.com |
-
----
+| TMDB | Movie metadata, now playing and trending titles, plus movie reviews | https://www.themoviedb.org |
+| Rotten Tomatoes | In-theaters and at-home titles, plus critic and audience reviews | https://www.rottentomatoes.com |
 
 ## Repository Structure
 
-```
+```text
 Streaming_Data_Analysis/
-│
-├── datalake_bronze/        # Raw ingestion outputs (JSON files from APIs / scrapers)
-├── datalake_silver/        # Cleaned and transformed data (Parquet files)
-├── datalake_gold/          # Aggregated and summarized datasets ready for analysis
-│
-├── airflow/
-│   └── dags/               # Apache Airflow DAG definitions for pipeline orchestration
-│
-├── dashboard/              # Interactive Plotly Dash web application(s)
-├── notebooks/              # Exploratory data analysis (Jupyter Notebooks)
-├── workshop_1/             # Workshop 1 deliverables and data samples
-│
-└── README.md               # Project documentation (this file)
+|- airflow/
+|  |- config/
+|  |- dags/
+|  |  |- bronze_ingestion_dag.py
+|  |  |- silver_processing_dag.py
+|  |- logs/
+|  |- plugins/
+|  |- utils/
+|- datalake_bronze/
+|- datalake_silver/
+|- datalake_gold/
+|- notebooks/
+|- dashboard/
+|- workshop_1/
+|- workshop_2/
+|- docker-compose.yaml
+|- dockerfile
+|- requirements.txt
+|- README.md
 ```
 
-### Layer descriptions
+## Data Layers
 
-| Layer | Directory | Format | Purpose |
-|-------|-----------|--------|---------|
-| **Bronze** | `datalake_bronze/` | JSON | Raw data as received from sources — no transformations applied |
-| **Silver** | `datalake_silver/` | Parquet | Cleaned, deduplicated, and schema-normalized records |
-| **Gold** | `datalake_gold/` | Parquet / CSV | Aggregated metrics and KPIs ready for dashboarding and reporting |
+| Layer | Directory | Main format | Purpose |
+|-------|-----------|-------------|---------|
+| Bronze | datalake_bronze/ | JSON | Raw API and scraping outputs |
+| Silver | datalake_silver/ | Parquet | Cleaned and standardized records |
+| Gold | datalake_gold/ | Parquet / CSV | Aggregated datasets for analysis |
 
----
+## Airflow DAGs
 
-## Pipeline Architecture
-
-```
-IMDb / Rotten Tomatoes
-        │
-        ▼
-  [Ingestion scripts]
-        │
-        ▼
-  datalake_bronze/   (raw JSON)
-        │
-        ▼
-  [Transformation]
-        │
-        ▼
-  datalake_silver/   (cleaned Parquet)
-        │
-        ▼
-  [Aggregation]
-        │
-        ▼
-  datalake_gold/     (summary Parquet / CSV)
-        │
-        ▼
-  dashboard/         (Plotly Dash visualizations)
-```
-
-All pipeline steps are orchestrated via **Apache Airflow** DAGs located in `airflow/dags/`.
-
----
+- bronze_ingestion: collects TMDB and Rotten Tomatoes raw data into Bronze.
+- silver_processing: reads Bronze JSON files and writes Silver Parquet datasets.
 
 ## Getting Started
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/JuanMosqueraUD/Streaming_Data_Analysis.git
-   cd Streaming_Data_Analysis
-   ```
+### 1) Prerequisites
 
-2. **Install dependencies** (requirements file will be added per component)
-   ```bash
-   pip install -r requirements.txt
-   ```
+- Docker and Docker Compose installed
+- A .env file at the project root with at least:
+  - TMDB_ACCESS_TOKEN
+  - TMDB_API_KEY
 
-3. **Run Airflow** to trigger data pipelines
-   ```bash
-   airflow db init
-   airflow scheduler &
-   airflow webserver
-   ```
+Optional variables (have defaults in docker-compose):
+- TMDB_NOW_PLAYING_PAGES
+- TMDB_REVIEW_MOVIES
+- TMDB_REVIEWS_PER_MOVIE
+- RT_MAX_MOVIES
+- RT_MAX_REVIEWS_PER_MOVIE
 
-4. **Launch the dashboard**
-   ```bash
-   python dashboard/app.py
-   ```
+### 2) Build and initialize Airflow
 
----
+```bash
+docker compose build
+docker compose up airflow-init
+```
+
+### 3) Start services
+
+```bash
+docker compose up -d
+```
+
+Airflow UI will be available at http://localhost:8080
+
+Default credentials (if not overridden):
+- user: airflow
+- password: airflow
+
+### 4) Run the pipeline
+
+In Airflow UI:
+1. Enable DAG bronze_ingestion
+2. Trigger DAG bronze_ingestion
+3. DAG silver_processing is triggered automatically by bronze_ingestion
+
+Output directories:
+- Bronze files in datalake_bronze/
+- Silver files in datalake_silver/
+
+## Local Python Usage (optional)
+
+If you want to inspect notebooks or run scripts locally:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Notes
+
+- This repository currently contains pipeline code and data outputs.
+- The dashboard folder exists but does not currently include an executable app.py entry point.
 
 ## License
 
-This project is developed for academic purposes as part of the Streaming Data Analysis course.
+Academic project for the Streaming Data Analysis course.
