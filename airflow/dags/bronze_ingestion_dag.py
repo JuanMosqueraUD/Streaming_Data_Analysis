@@ -1,5 +1,6 @@
 from airflow.decorators import dag, task
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.operators.python import get_current_context
 from datetime import datetime
 import json
 import os
@@ -27,7 +28,20 @@ RT_MAX_REVIEWS_PER_MOVIE = int(os.getenv("RT_MAX_REVIEWS_PER_MOVIE", "10"))
 
 
 def get_timestamp():
-    """Retorna timestamp en formato YYYYMMDD_HHMMSS para nombres de archivo"""
+    """Retorna timestamp en formato YYYYMMDD_HHMMSS para nombres de archivo.
+
+    Prefiere `logical_date` del contexto de Airflow (determinista por DAG run)
+    y cae a UTC en caso de no estar disponible.
+    """
+    try:
+        ctx = get_current_context()
+        logical_date = ctx.get("logical_date")
+        if logical_date:
+            return logical_date.strftime("%Y%m%d_%H%M%S")
+    except Exception:
+        # get_current_context falla fuera de contexto de tarea; seguir con UTC
+        pass
+
     return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
 
