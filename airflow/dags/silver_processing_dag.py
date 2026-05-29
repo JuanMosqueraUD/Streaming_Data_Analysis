@@ -8,6 +8,7 @@ from airflow.decorators import dag, task
 from airflow.sensors.base import PokeReturnValue
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import get_current_context
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from utils.bronze_file_utils import group_files_by_silver_family, list_bronze_json_files
 from utils.silver_processing import (
@@ -213,10 +214,16 @@ def silver_processing_dag():
 
     end = summarize_outputs(titles_path, rt_reviews_path, tmdb_reviews_path)
     save_processed = save_processed_files(grouped, processed_files)
+    
+    # Trigger Gold processing DAG after Silver processing completes
+    trigger_gold = TriggerDagRunOperator(
+        task_id="trigger_gold_processing",
+        trigger_dag_id="gold_processing",
+    )
 
     start >> bronze_ready >> files >> processed_files >> grouped
     grouped >> run_stamp
-    run_stamp >> [titles_path, rt_reviews_path, tmdb_reviews_path] >> end >> save_processed
+    run_stamp >> [titles_path, rt_reviews_path, tmdb_reviews_path] >> end >> save_processed >> trigger_gold
 
 
 silver_processing_dag()

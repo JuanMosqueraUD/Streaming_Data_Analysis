@@ -63,8 +63,9 @@ Streaming_Data_Analysis/
 
 ## Airflow DAGs
 
-- bronze_ingestion: collects TMDB and Rotten Tomatoes raw data into Bronze.
-- silver_processing: reads Bronze JSON files and writes Silver Parquet datasets.
+- **bronze_ingestion**: Collects TMDB and Rotten Tomatoes raw data into Bronze (datalake_bronze/).
+- **silver_processing**: Reads Bronze JSON files, normalizes and cleans data, writes Silver Parquet datasets (datalake_silver/). Automatically triggered by bronze_ingestion.
+- **gold_processing**: Reads all Silver Parquet files, computes governance KPIs and storytelling aggregations using PySpark, writes two consolidated datasets (datalake_gold/). Scheduled weekly or triggered after silver_processing completes.
 
 ## Getting Started
 
@@ -101,16 +102,87 @@ Default credentials (if not overridden):
 - user: airflow
 - password: airflow
 
-### 4) Run the pipeline
+### 4) Run the complete three-layer pipeline
 
-In Airflow UI:
-1. Enable DAG bronze_ingestion
-2. Trigger DAG bronze_ingestion
-3. DAG silver_processing is triggered automatically by bronze_ingestion
+In Airflow UI (http://localhost:8080):
 
-Output directories:
-- Bronze files in datalake_bronze/
-- Silver files in datalake_silver/
+1. **Enable and trigger bronze_ingestion DAG**
+   - This DAG collects raw data from TMDB and Rotten Tomatoes APIs
+   - Output: JSON files in `datalake_bronze/`
+   - Automatically triggers silver_processing upon completion
+
+2. **silver_processing runs automatically**
+   - Reads Bronze JSON files and normalizes them
+   - Output: Parquet files in `datalake_silver/` (silver_titles_*, silver_rt_reviews_*, silver_tmdb_reviews_*)
+   - Automatically triggers gold_processing upon completion
+
+3. **gold_processing runs automatically or on schedule (@weekly)**
+   - Consolidates all Silver Parquet files using PySpark
+   - Computes governance KPIs and storytelling aggregations
+   - Output: Two consolidated Parquet files in `datalake_gold/`:
+     - `gold_*_YYYYMMDD_HHMMSS.parquet` (consolidated datasets with metadata)
+
+### 5) Explore Gold layer outputs
+
+Use the Jupyter notebook to inspect and validate Gold outputs:
+
+```bash
+# Option 1: Run locally in VSCode
+# Open: notebooks/gold_consolidation.ipynb
+# Execute cells sequentially to read Silver Parquet and consolidate into Gold
+
+# Option 2: Run inside Airflow container
+docker-compose exec airflow-webserver jupyter notebook --ip=0.0.0.0 --no-browser
+# Access at http://localhost:8888
+```
+
+### 6) Data flow summary
+
+```
+datalake_bronze/                    (raw JSON)
+       ↓
+bronze_ingestion DAG ──────────────→ Silver normalized
+       ↓
+datalake_silver/                    (Parquet: titles, reviews)
+       ↓
+silver_processing DAG ─────────────→ Silver cleanup, dedup
+       ↓
+datalake_gold/                      (consolidated Parquet)
+       ↓
+gold_processing DAG ───────────────→ KPIs + aggregations
+       ↓
+dashboard/                          (Workshop 4: Plotly Dash)
+```
+
+### Available outputs
+
+- **datalake_bronze/**: Raw JSON files collected from APIs (managed by Airflow)
+- **datalake_silver/**: Normalized Parquet datasets (titles, reviews per source)
+- **datalake_gold/**: Consolidated analytical datasets ready for dashboards:
+  - `gold_silver_titles_*.parquet`: Consolidated movie title data with KPIs
+  - `gold_silver_rt_reviews_*.parquet`: Consolidated Rotten Tomatoes reviews
+  - `gold_silver_tmdb_reviews_*.parquet`: Consolidated TMDB reviews
+
+## Workshop 3: Gold Layer Implementation
+
+The gold_processing DAG computes:
+
+### Governance KPIs
+- **Null rate per field**: Data quality percentage
+- **Volume metrics**: Total records ingested per source and period
+- **Duplicate rate**: Percentage of duplicates pre/post-deduplication
+- **Schema compliance**: Records conforming to expected Silver schema
+- **Text statistics**: Min, max, mean length of review text per source
+
+### Storytelling Aggregations
+- **Sentiment distribution**: Positive/negative/neutral percentages
+- **Sentiment trends**: Temporal opinion shifts (by day/week)
+- **Top keywords**: Most frequent terms from review corpus
+- **Source comparison**: Sentiment and volume breakdown by API vs scraping
+- **Reviewer rankings**: Top contributors by review count
+- **Title rankings**: Most-reviewed titles
+
+All aggregations are persisted as Parquet and ready for consumption by Workshop 4 dashboards.
 
 ## Local Python Usage (optional)
 
