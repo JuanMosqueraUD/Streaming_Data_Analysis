@@ -80,6 +80,18 @@ def _governance_for_family(df: DataFrame, family: str, run_stamp: str) -> list:
     pdf = df.toPandas().copy()
     total = len(pdf)
 
+    duplicate_key_map = {
+        "titles": ["canonical_title", "source"],
+        "rt_reviews": ["canonical_title", "review_type", "reviewer_name", "review_date", "review_text"],
+        "tmdb_reviews": ["movie_id", "review_id"],
+    }
+
+    numeric_candidate_map = {
+        "titles": ["source_id", "release_year", "popularity", "vote_average", "vote_count", "critics_score", "audience_score"],
+        "rt_reviews": ["critics_score", "audience_score", "rating"],
+        "tmdb_reviews": ["movie_id", "popularity", "vote_average", "vote_count", "release_year", "rating", "total_reviews"],
+    }
+
     for col_name in pdf.columns:
         null_count = int(pdf[col_name].isna().sum())
         null_rate = round(null_count / total * 100, 2) if total else 0.0
@@ -105,14 +117,20 @@ def _governance_for_family(df: DataFrame, family: str, run_stamp: str) -> list:
         "run_stamp": run_stamp,
     })
 
-    if "canonical_title" in pdf.columns:
-        unique_titles = pdf["canonical_title"].dropna().nunique()
-        dup_rate = round((total - unique_titles) / total * 100, 2) if total else 0.0
+    duplicate_key_cols = duplicate_key_map.get(family)
+    if duplicate_key_cols and all(col_name in pdf.columns for col_name in duplicate_key_cols):
+        valid_keys = pdf[duplicate_key_cols].notna().all(axis=1)
+        key_frame = pdf.loc[valid_keys, duplicate_key_cols].copy()
+        if not key_frame.empty:
+            unique_records = key_frame.drop_duplicates().shape[0]
+            dup_rate = round(((len(key_frame) - unique_records) / len(key_frame)) * 100, 2)
+        else:
+            dup_rate = 0.0
         records.append({
             "kpi_type": "duplicates",
             "metric_name": f"duplicate_rate_{family}",
             "family": family,
-            "column_name": "canonical_title",
+            "column_name": ",".join(duplicate_key_cols),
             "value": dup_rate,
             "unit": "percentage",
             "computed_at": now,
@@ -132,15 +150,22 @@ def _governance_for_family(df: DataFrame, family: str, run_stamp: str) -> list:
                 "run_stamp": run_stamp,
             })
 
-    for numeric_col in [c for c in pdf.columns if pd.api.types.is_numeric_dtype(pdf[c])]:
+    for numeric_col in [c for c in numeric_candidate_map.get(family, []) if c in pdf.columns]:
         numeric = pd.to_numeric(pdf[numeric_col], errors="coerce")
         valid = numeric.dropna()
-        if valid.empty:
+        if len(valid) < 4:
             continue
-        mean = float(valid.mean())
-        std = float(valid.std(ddof=0))
-        threshold = 2 * std if std else 0.0
-        outlier_rate = round(float(((valid < mean - threshold) | (valid > mean + threshold)).mean() * 100), 2)
+
+        q1 = valid.quantile(0.25)
+        q3 = valid.quantile(0.75)
+        iqr = q3 - q1
+        if pd.isna(iqr) or iqr == 0:
+            continue
+
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+        outlier_count = int(((valid < lower) | (valid > upper)).sum())
+        outlier_rate = round((outlier_count / len(valid)) * 100, 2)
         records.append({
             "kpi_type": "outlier_rate",
             "metric_name": f"outlier_rate_{family}_{numeric_col}",
@@ -199,11 +224,11 @@ def _governance_for_family(df: DataFrame, family: str, run_stamp: str) -> list:
 
     date_col = next((c for c in ("review_date", "scraped_at", "processed_at") if c in pdf.columns), None)
     if date_col:
-        parsed = pd.to_datetime(pdf[date_col], errors="coerce")
-        valid_dates = parsed.dropna()
+        parsed = pd.to_datetime(pdf[date_col], errors="coerce").dt.normalize()
+        valid_dates = parsed.dropna().drop_duplicates()
         if not valid_dates.empty:
             days_span = (valid_dates.max() - valid_dates.min()).days + 1
-            frequency_rate = round((valid_dates.nunique() / max(days_span, 1)) * 100, 2)
+            frequency_rate = round(min((valid_dates.nunique() / max(days_span, 1)) * 100, 100.0), 2)
             records.append({
                 "kpi_type": "ingestion_frequency",
                 "metric_name": f"ingestion_frequency_compliance_{family}",
