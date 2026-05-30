@@ -26,3 +26,9 @@ textblob==0.17.1
 python-dotenv==1.0.0
 plotly==5.18.0
 
+# Dash web apps
+dash==2.10.2
+dash-bootstrap-components==1.4.1
+# Gunicorn para servir en producción (opcional)
+gunicorn==20.1.0
+

@@ -30,6 +30,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/datalake_bronze:/opt/airflow/datalake_bronze
     - ${AIRFLOW_PROJ_DIR:-.}/datalake_silver:/opt/airflow/datalake_silver
     - ${AIRFLOW_PROJ_DIR:-.}/datalake_gold:/opt/airflow/datalake_gold
+    - ${AIRFLOW_PROJ_DIR:-.}/dashboard:/opt/airflow/dashboard
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -138,6 +139,24 @@ services:
       - bash
       - -c
       - airflow
+    depends_on:
+      <<: *airflow-common-depends-on
+
+  storytelling-app:
+    <<: *airflow-common
+    command: bash -c "python /opt/airflow/dashboard/storytelling_app.py"
+    ports:
+      - "8051:8051"
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+
+  governance-app:
+    <<: *airflow-common
+    command: bash -c "python /opt/airflow/dashboard/governance_app.py"
+    ports:
+      - "8050:8050"
+    restart: always
     depends_on:
       <<: *airflow-common-depends-on
 
