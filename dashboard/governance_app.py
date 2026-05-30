@@ -195,16 +195,21 @@ def build_null_rate_figure(df: pd.DataFrame) -> go.Figure:
         title="Null Rate by Family and Column",
     )
     fig.update_traces(texttemplate="%{x:.2f}%", textposition="outside", cliponaxis=False)
+    n_bars = len(plot_df)
     fig.update_layout(
         template="plotly_white",
-        height=420,
-        margin={"l": 20, "r": 20, "t": 60, "b": 20},
+        height=max(900, n_bars * 28),
+        margin={"l": 20, "r": 160, "t": 60, "b": 20},
         xaxis_title="Null rate (%)",
         yaxis_title="",
         legend_title="Family",
         paper_bgcolor=PALETTE["card"],
         plot_bgcolor=PALETTE["card"],
-        title_font={"size": 18},
+        title_font={"size": 20},
+        font={"size": 15},
+        yaxis={"tickfont": {"size": 15}},
+        xaxis={"tickfont": {"size": 15}, "title_font": {"size": 15}},
+        bargap=0.35,
     )
     fig.update_xaxes(range=[0, max(100, float(plot_df["value"].max()) * 1.15)])
     return fig
@@ -300,7 +305,7 @@ def build_outlier_rate_figure(df: pd.DataFrame) -> go.Figure:
         color_discrete_sequence=[PALETTE["primary"], PALETTE["accent"], PALETTE["warning"], PALETTE["success"]],
         title="Outlier Rate by Column",
     )
-    fig.update_traces(texttemplate="%{x:.2f}%", textposition="outside", cliponaxis=False)
+    fig.update_traces(texttemplate="%{x:.2f}%", textposition="outside", cliponaxis=False, textfont_size=14)
     fig.update_layout(
         template="plotly_white",
         height=380,
@@ -386,11 +391,23 @@ def build_app_layout(df: pd.DataFrame, source_label: Optional[str]) -> html.Div:
                             html.Div(
                                 [
                                     html.Div("Source", className="small text-uppercase", style={"color": PALETTE["muted"]}),
-                                    html.Div(source_label or "No source found", style={"fontWeight": 600, "color": PALETTE["text"]}),
+                                    html.Div(
+                                        source_label or "No source found",
+                                        style={
+                                            "fontWeight": 600,
+                                            "color": PALETTE["text"],
+                                            "overflow": "hidden",
+                                            "textOverflow": "ellipsis",
+                                            "whiteSpace": "nowrap",
+                                            "maxWidth": "100%",
+                                        },
+                                        title=source_label or "No source found",
+                                    ),
                                     html.Div(f"Last updated: {last_updated}", className="small", style={"color": PALETTE["muted"]}),
                                     html.Div(f"Run stamp: {last_run_stamp}", className="small", style={"color": PALETTE["muted"]}),
                                 ],
                                 className="mt-3",
+                                style={"overflow": "hidden", "minWidth": 0},
                             ),
                         ],
                         md=4,

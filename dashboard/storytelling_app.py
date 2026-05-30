@@ -576,10 +576,22 @@ def build_layout(df: pd.DataFrame, source_label: Optional[str]) -> html.Div:
                             html.Div(
                                 [
                                     html.Div("Source", className="small text-uppercase", style={"color": PALETTE["muted"]}),
-                                    html.Div(source_label or "No source found", style={"fontWeight": 600, "color": PALETTE["text"]}),
+                                    html.Div(source_label or "No source found",
+                                                style={
+                                                    "fontWeight": 600,
+                                                    "color": PALETTE["text"],
+                                                    "overflow": "hidden",
+                                                    "textOverflow": "ellipsis",
+                                                    "whiteSpace": "nowrap",
+                                                    "maxWidth": "100%",
+                                                    "display": "block",
+                                                },
+                                                title=source_label or "No source found",  # shows full path on hover
+                                            ),
                                     html.Div(f"Last updated: {last_updated}", className="small", style={"color": PALETTE["muted"]}),
                                 ],
                                 className="mt-3",
+                                style={"overflow": "hidden", "minWidth": 0},
                             ),
                         ],
                         md=4,
